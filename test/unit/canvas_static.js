@@ -109,7 +109,7 @@
   };
 
   function _createImageElement() {
-    return fabric.isLikelyNode ? new (require(fabric.canvasModule).Image)() : fabric.document.createElement('img');
+    return fabric.document.createElement('img');
   }
 
   function _createImageObject(width, height, callback) {
@@ -126,18 +126,8 @@
   }
 
   function setSrc(img, src, callback) {
-    if (fabric.isLikelyNode) {
-      require('fs').readFile(src, function(err, imgData) {
-        if (err) { throw err; };
-        img.src = imgData;
-        img._src = src;
-        callback && callback();
-      });
-    }
-    else {
-      img.src = src;
-      callback && callback();
-    }
+    img.onload = callback;
+    img.src = src;
   }
 
   function fixImageDimension(imgObj) {
@@ -152,15 +142,9 @@
 
   // force creation of static canvas
   // TODO: fix this
-  var Canvas = fabric.Canvas;
-  fabric.Canvas = null;
-  var el = fabric.document.createElement('canvas');
-  el.width = 600;
-  el.height = 600;
+  var canvas = this.canvas = new fabric.StaticCanvas(null, {enableRetinaScaling: false, width: 600, height: 600});
+  var canvas2 = this.canvas2 = new fabric.StaticCanvas(null, {enableRetinaScaling: false, width: 600, height: 600});
 
-  var canvas = this.canvas = fabric.isLikelyNode ? fabric.createCanvasForNode() : new fabric.StaticCanvas(el),
-      canvas2 = this.canvas2 = fabric.isLikelyNode ? fabric.createCanvasForNode() : new fabric.StaticCanvas(el);
-  fabric.Canvas = Canvas;
 
   var lowerCanvasEl = canvas.lowerCanvasEl;
 
@@ -503,9 +487,11 @@
   });
 
   QUnit.test('toDataURL cropping', function(assert) {
+    var done = assert.async();
     assert.ok(typeof canvas.toDataURL === 'function');
     if (!fabric.Canvas.supports('toDataURL')) {
       window.alert('toDataURL is not supported by this environment. Some of the tests can not be run.');
+      done();
     }
     else {
       var croppingWidth = 75,
@@ -515,6 +501,7 @@
       fabric.Image.fromURL(dataURL, function (img) {
         assert.equal(img.width, croppingWidth, 'Width of exported image should correspond to cropping width');
         assert.equal(img.height, croppingHeight, 'Height of exported image should correspond to cropping height');
+        done();
       });
     }
   });
@@ -1329,11 +1316,13 @@
     assert.equal(canvas.toString(), '#<fabric.Canvas (1): { objects: 1 }>');
   });
 
-  QUnit.test('dispose', function(assert) {
-    assert.ok(typeof canvas.dispose === 'function');
-    canvas.add(makeRect(), makeRect(), makeRect());
-    canvas.dispose();
-    assert.equal(canvas.getObjects().length, 0, 'dispose should clear canvas');
+  QUnit.test('dispose clear references', function(assert) {
+    var canvas2 = new fabric.Canvas();
+    assert.ok(typeof canvas2.dispose === 'function');
+    canvas2.add(makeRect(), makeRect(), makeRect());
+    canvas2.dispose();
+    assert.equal(canvas2.getObjects().length, 0, 'dispose should clear canvas');
+    assert.equal(canvas2.lowerCanvasEl, null, 'dispose should clear lowerCanvasEl');
   });
 
   QUnit.test('clone', function(assert) {
@@ -1584,6 +1573,24 @@
         originX: 'center'
       });
     });
+  });
+
+  QUnit.test('createPNGStream', function(assert) {
+    if (!fabric.isLikelyNode) {
+      assert.ok(true, 'not supposed to run outside node');
+    }
+    else {
+      assert.ok(typeof canvas.createPNGStream === 'function', 'there is a createPNGStream method');
+    }
+  });
+
+  QUnit.test('createJPEGStream', function(assert) {
+    if (!fabric.isLikelyNode) {
+      assert.ok(true, 'not supposed to run outside node');
+    }
+    else {
+      assert.ok(typeof canvas.createJPEGStream === 'function', 'there is a createJPEGStream method');
+    }
   });
 
   // QUnit.test('backgroundImage', function(assert) {

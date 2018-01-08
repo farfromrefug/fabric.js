@@ -1,5 +1,5 @@
 (function() {
-  var canvas = this.canvas = fabric.isLikelyNode ? fabric.createCanvasForNode() : new fabric.StaticCanvas();
+  var canvas = this.canvas = new fabric.StaticCanvas(null, {enableRetinaScaling: false});
   QUnit.module('fabric.ObjectGeometry');
 
   QUnit.test('intersectsWithRectangle', function(assert) {
@@ -329,6 +329,23 @@
     canvas.setZoom(0.1);
     cObj.setCoords();
     assert.ok(cObj.isOnScreen(), 'zooming out the object is again on screen');
+  });
+
+  QUnit.test('transformMatrixKey depends from properties', function(assert) {
+    var cObj = new fabric.Object(
+      { left: -10, top: -10, width: 30, height: 40, strokeWidth: 0});
+    var key1 = cObj.transformMatrixKey();
+    cObj.left = 5;
+    var key2 = cObj.transformMatrixKey();
+    cObj.left = -10;
+    var key3 = cObj.transformMatrixKey();
+    cObj.width = 5;
+    var key4 = cObj.transformMatrixKey();
+    assert.notEqual(key1, key2, 'keys are different');
+    assert.equal(key1, key3, 'keys are equal');
+    assert.notEqual(key4, key2, 'keys are different');
+    assert.notEqual(key4, key1, 'keys are different');
+    assert.notEqual(key4, key3, 'keys are different');
   });
 
   QUnit.test('isOnScreen with object that include canvas', function(assert) {
