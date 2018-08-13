@@ -16,14 +16,18 @@
    * @tutorial {@link http://fabricjs.com/fabric-intro-part-1#canvas}
    * @see {@link fabric.Canvas#initialize} for constructor definition
    *
-   * @fires object:added
-   * @fires object:removed
    * @fires object:modified
+   * @fires object:rotated
+   * @fires object:scaled
+   * @fires object:moved
+   * @fires object:skewed
    * @fires object:rotating
    * @fires object:scaling
    * @fires object:moving
+   * @fires object:skewing
    * @fires object:selected this event is deprecated. use selection:created
    *
+   * @fires before:transform
    * @fires before:selection:cleared
    * @fires selection:cleared
    * @fires selection:updated
@@ -33,9 +37,17 @@
    * @fires mouse:down
    * @fires mouse:move
    * @fires mouse:up
+   * @fires mouse:down:before
+   * @fires mouse:move:before
+   * @fires mouse:up:before
    * @fires mouse:over
    * @fires mouse:out
    * @fires mouse:dblclick
+   *
+   * @fires dragover
+   * @fires dragenter
+   * @fires dragleave
+   * @fires drop
    *
    */
   fabric.Canvas = fabric.util.createClass(fabric.StaticCanvas, /** @lends fabric.Canvas.prototype */ {
@@ -49,6 +61,7 @@
     initialize: function(el, options) {
       options || (options = { });
       this.renderAndResetBound = this.renderAndReset.bind(this);
+      this.requestRenderAllBound = this.requestRenderAll.bind(this);
       this._initStatic(el, options);
       this._initInteractive();
       this._createCacheCanvas();
@@ -142,8 +155,10 @@
      * Indicates which key enable alternative selection
      * in case of target overlapping with active object
      * values: 'altKey', 'shiftKey', 'ctrlKey'.
+     * For a series of reason that come from the general expectations on how
+     * things should work, this feature works only for preserveObjectStacking true.
      * If `null` or 'none' or any other string that is not a modifier key
-     * feature is disabled feature disabled.
+     * feature is disabled.
      * @since 1.6.5
      * @type null|String
      * @default
@@ -374,12 +389,22 @@
         this.clearContext(this.contextTop);
         this.contextTopDirty = false;
       }
-      if (this.isDrawingMode && this._isCurrentlyDrawing) {
-        this.freeDrawingBrush && this.freeDrawingBrush._render();
+      if (this.hasLostContext) {
+        this.renderTopLayer(this.contextTop);
       }
       var canvasToDrawOn = this.contextContainer;
       this.renderCanvas(canvasToDrawOn, this._chooseObjectsToRender());
       return this;
+    },
+
+    renderTopLayer: function(ctx) {
+      if (this.isDrawingMode && this._isCurrentlyDrawing) {
+        this.freeDrawingBrush && this.freeDrawingBrush._render();
+      }
+      // we render the top context - last object
+      if (this.selection && this._groupSelector) {
+        this._drawSelection(ctx);
+      }
     },
 
     /**
@@ -391,12 +416,7 @@
     renderTop: function () {
       var ctx = this.contextTop;
       this.clearContext(ctx);
-
-      // we render the top context - last object
-      if (this.selection && this._groupSelector) {
-        this._drawSelection(ctx);
-      }
-
+      this.renderTopLayer(ctx);
       this.fire('after:render');
       this.contextTopDirty = true;
       return this;
@@ -419,30 +439,25 @@
       });
 
       if (this._shouldCenterTransform(t.target)) {
-        if (t.action === 'rotate') {
-          this._setOriginToCenter(t.target);
+        if (t.originX !== 'center') {
+          if (t.originX === 'right') {
+            t.mouseXSign = -1;
+          }
+          else {
+            t.mouseXSign = 1;
+          }
         }
-        else {
-          if (t.originX !== 'center') {
-            if (t.originX === 'right') {
-              t.mouseXSign = -1;
-            }
-            else {
-              t.mouseXSign = 1;
-            }
+        if (t.originY !== 'center') {
+          if (t.originY === 'bottom') {
+            t.mouseYSign = -1;
           }
-          if (t.originY !== 'center') {
-            if (t.originY === 'bottom') {
-              t.mouseYSign = -1;
-            }
-            else {
-              t.mouseYSign = 1;
-            }
+          else {
+            t.mouseYSign = 1;
           }
+        }
 
-          t.originX = 'center';
-          t.originY = 'center';
-        }
+        t.originX = 'center';
+        t.originY = 'center';
       }
       else {
         t.originX = t.original.originX;
@@ -491,6 +506,17 @@
      * @return {Boolean}
      */
     isTargetTransparent: function (target, x, y) {
+      if (target.shouldCache() && target._cacheCanvas) {
+        var normalizedPointer = this._normalizePointer(target, {x: x, y: y}),
+            targetRelativeX = target.cacheTranslationX + (normalizedPointer.x * target.zoomX),
+            targetRelativeY = target.cacheTranslationY + (normalizedPointer.y * target.zoomY);
+
+        var isTransparent = fabric.util.isTransparent(
+          target._cacheContext, targetRelativeX, targetRelativeY, this.targetFindTolerance);
+
+        return isTransparent;
+      }
+
       var ctx = this.contextCache,
           originalColor = target.selectionBackgroundColor, v = this.viewportTransform;
 
@@ -565,6 +591,8 @@
     },
 
     /**
+     * centeredScaling from object can't override centeredScaling from canvas.
+     * this should be fixed, since object setting should take precedence over canvas.
      * @private
      * @param {fabric.Object} target
      */
@@ -657,6 +685,7 @@
         scaleY: target.scaleY,
         skewX: target.skewX,
         skewY: target.skewY,
+        // used by transation
         offsetX: pointer.x - target.left,
         offsetY: pointer.y - target.top,
         originX: origin.x,
@@ -665,28 +694,24 @@
         ey: pointer.y,
         lastX: pointer.x,
         lastY: pointer.y,
-        left: target.left,
-        top: target.top,
+        // unsure they are usefull anymore.
+        // left: target.left,
+        // top: target.top,
         theta: degreesToRadians(target.angle),
+        // end of unsure
         width: target.width * target.scaleX,
         mouseXSign: 1,
         mouseYSign: 1,
         shiftKey: e.shiftKey,
-        altKey: e[this.centeredKey]
+        altKey: e[this.centeredKey],
+        original: fabric.util.saveObjectTransform(target),
       };
 
-      this._currentTransform.original = {
-        left: target.left,
-        top: target.top,
-        scaleX: target.scaleX,
-        scaleY: target.scaleY,
-        skewX: target.skewX,
-        skewY: target.skewY,
-        originX: origin.x,
-        originY: origin.y
-      };
+      this._currentTransform.original.originX = origin.x;
+      this._currentTransform.original.originY = origin.y;
 
       this._resetCurrentTransform();
+      this._beforeTransform(e);
     },
 
     /**
@@ -837,9 +862,9 @@
     _scaleObject: function (x, y, by) {
       var t = this._currentTransform,
           target = t.target,
-          lockScalingX = target.get('lockScalingX'),
-          lockScalingY = target.get('lockScalingY'),
-          lockScalingFlip = target.get('lockScalingFlip');
+          lockScalingX = target.lockScalingX,
+          lockScalingY = target.lockScalingY,
+          lockScalingFlip = target.lockScalingFlip;
 
       if (lockScalingX && lockScalingY) {
         return false;
@@ -1009,20 +1034,22 @@
      */
     _rotateObject: function (x, y) {
 
-      var t = this._currentTransform;
+      var t = this._currentTransform,
+          target = t.target, constraintPosition,
+          constraintPosition = target.translateToOriginPoint(target.getCenterPoint(), t.originX, t.originY);
 
-      if (t.target.get('lockRotation')) {
+      if (target.lockRotation) {
         return false;
       }
 
-      var lastAngle = atan2(t.ey - t.top, t.ex - t.left),
-          curAngle = atan2(y - t.top, x - t.left),
+      var lastAngle = atan2(t.ey - constraintPosition.y, t.ex - constraintPosition.x),
+          curAngle = atan2(y - constraintPosition.y, x - constraintPosition.x),
           angle = radiansToDegrees(curAngle - lastAngle + t.theta),
           hasRotated = true;
 
-      if (t.target.snapAngle > 0) {
-        var snapAngle  = t.target.snapAngle,
-            snapThreshold  = t.target.snapThreshold || snapAngle,
+      if (target.snapAngle > 0) {
+        var snapAngle  = target.snapAngle,
+            snapThreshold  = target.snapThreshold || snapAngle,
             rightAngleLocked = Math.ceil(angle / snapAngle) * snapAngle,
             leftAngleLocked = Math.floor(angle / snapAngle) * snapAngle;
 
@@ -1040,11 +1067,14 @@
       }
       angle %= 360;
 
-      if (t.target.angle === angle) {
+      if (target.angle === angle) {
         hasRotated = false;
       }
       else {
-        t.target.angle = angle;
+        // rotation only happen here
+        target.angle = angle;
+        // Make sure the constraints apply
+        target.setPositionByOrigin(constraintPosition, t.originX, t.originY);
       }
 
       return hasRotated;
@@ -1057,18 +1087,6 @@
      */
     setCursor: function (value) {
       this.upperCanvasEl.style.cursor = value;
-    },
-
-    /**
-     * @param {fabric.Object} target to reset transform
-     * @private
-     */
-    _resetObjectTransform: function (target) {
-      target.scaleX = 1;
-      target.scaleY = 1;
-      target.skewX = 0;
-      target.skewY = 0;
-      target.rotate(0);
     },
 
     /**
@@ -1206,7 +1224,7 @@
       while (i--) {
         if (this._checkTarget(pointer, objects[i])) {
           target = objects[i];
-          if (target.type === 'group' && target.subTargetCheck) {
+          if (target.subTargetCheck && target instanceof fabric.Group) {
             normalizedPointer = this._normalizePointer(target, pointer);
             subTarget = this._searchPossibleTargets(target._objects, normalizedPointer);
             subTarget && this.targets.push(subTarget);
@@ -1237,6 +1255,8 @@
      * ignoreZoom true gives back coordinates after being processed
      * by the viewportTransform ( sort of coordinates of what is displayed
      * on the canvas where you are clicking.
+     * ignoreZoom true = HTMLElement coordinates relative to top,left
+     * ignoreZoom false, default = fabric space coordinates, the same used for shape position
      * To interact with your shapes top and left you want to use ignoreZoom true
      * most of the time, while ignoreZoom false will give you coordinates
      * compatible with the object.oCoords system.
@@ -1245,11 +1265,17 @@
      * @param {Boolean} ignoreZoom
      * @return {Object} object with "x" and "y" number values
      */
-    getPointer: function (e, ignoreZoom, upperCanvasEl) {
-      if (!upperCanvasEl) {
-        upperCanvasEl = this.upperCanvasEl;
+    getPointer: function (e, ignoreZoom) {
+      // return cached values if we are in the event processing chain
+      if (this._absolutePointer && !ignoreZoom) {
+        return this._absolutePointer;
       }
+      if (this._pointer && ignoreZoom) {
+        return this._pointer;
+      }
+
       var pointer = getPointer(e),
+          upperCanvasEl = this.upperCanvasEl,
           bounds = upperCanvasEl.getBoundingClientRect(),
           boundsWidth = bounds.width || 0,
           boundsHeight = bounds.height || 0,
@@ -1265,7 +1291,6 @@
       }
 
       this.calcOffset();
-
       pointer.x = pointer.x - this._offset.left;
       pointer.y = pointer.y - this._offset.top;
       if (!ignoreZoom) {
@@ -1351,7 +1376,7 @@
         height: height + 'px',
         left: 0,
         top: 0,
-        'touch-action': 'none'
+        'touch-action': this.allowTouchScrolling ? 'manipulation' : 'none'
       });
       element.width = width;
       element.height = height;
@@ -1552,7 +1577,12 @@
       this.removeListeners();
       wrapper.removeChild(this.upperCanvasEl);
       wrapper.removeChild(this.lowerCanvasEl);
-      delete this.upperCanvasEl;
+      this.contextCache = null;
+      this.contextTop = null;
+      ['upperCanvasEl', 'cacheCanvasEl'].forEach((function(element) {
+        fabric.util.cleanUpJsdomNode(this[element]);
+        this[element] = undefined;
+      }).bind(this));
       if (wrapper.parentNode) {
         wrapper.parentNode.replaceChild(this.lowerCanvasEl, this.wrapperEl);
       }
@@ -1644,6 +1674,13 @@
       this.callSuper('_setSVGObject', markup, instance, reviver);
       this._unwindGroupTransformOnObject(instance, originalProperties);
     },
+
+    setViewportTransform: function (vpt) {
+      if (this.renderOnAddRemove && this._activeObject && this._activeObject.isEditing) {
+        this._activeObject.clearContextTop();
+      }
+      fabric.StaticCanvas.prototype.setViewportTransform.call(this, vpt);
+    }
   });
 
   // copying static properties manually to work around Opera's bug,

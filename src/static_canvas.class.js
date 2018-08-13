@@ -165,6 +165,8 @@
 
     /**
      * Callback; invoked right before object is about to be scaled/rotated
+     * @deprecated since 2.3.0
+     * Use before:transform event
      */
     onBeforeScaleRotate: function () {
       /* NOOP */
@@ -328,7 +330,7 @@
      * @param {Object} [options] Optional options to set for the {@link fabric.Image|background image}.
      * @return {fabric.Canvas} thisArg
      * @chainable
-     * @see {@link http://jsfiddle.net/fabricjs/YH9yD/|jsFiddle demo}
+     * @see {@link http://jsfiddle.net/djnr8o7a/28/|jsFiddle demo}
      * @example <caption>Normal backgroundImage with left/top = 0</caption>
      * canvas.setBackgroundImage('http://fabricjs.com/assets/honey_im_subtle.png', canvas.renderAll.bind(canvas), {
      *   // Needed to position backgroundImage at 0/0
@@ -599,6 +601,7 @@
         if (!options.cssOnly) {
           this._setBackstoreDimension(prop, dimensions[prop]);
           cssValue += 'px';
+          this.hasLostContext = true;
         }
 
         if (!options.backstoreOnly) {
@@ -835,6 +838,10 @@
     /**
      * Function created to be instance bound at initialization
      * used in requestAnimationFrame rendering
+     * Let the fabricJS call it. If you call it manually you could have more
+     * animationFrame stacking on to of each other
+     * for an imperative rendering, use canvas.renderAll
+     * @private
      * @return {fabric.Canvas} instance
      * @chainable
      */
@@ -845,6 +852,7 @@
 
     /**
      * Append a renderAll request to next animation frame.
+     * unless one is already in progress, in that case nothing is done
      * a boolean flag will avoid appending more.
      * @return {fabric.Canvas} instance
      * @chainable
@@ -874,6 +882,13 @@
       return points;
     },
 
+    cancelRequestedRender: function() {
+      if (this.isRendering) {
+        fabric.util.cancelAnimFrame(this.isRendering);
+        this.isRendering = 0;
+      }
+    },
+
     /**
      * Renders background, objects, overlay and controls.
      * @param {CanvasRenderingContext2D} ctx
@@ -883,10 +898,7 @@
      */
     renderCanvas: function(ctx, objects) {
       var v = this.viewportTransform;
-      if (this.isRendering) {
-        fabric.util.cancelAnimFrame(this.isRendering);
-        this.isRendering = 0;
-      }
+      this.cancelRequestedRender();
       this.calcViewportBoundaries();
       this.clearContext(ctx);
       this.fire('before:render');
@@ -1123,7 +1135,7 @@
      * @private
      */
     _toObjects: function(methodName, propertiesToInclude) {
-      return this.getObjects().filter(function(object) {
+      return this._objects.filter(function(object) {
         return !object.excludeFromExport;
       }).map(function(instance) {
         return this._toObject(instance, methodName, propertiesToInclude);
@@ -1325,7 +1337,7 @@
     createSVGFontFacesMarkup: function() {
       var markup = '', fontList = { }, obj, fontFamily,
           style, row, rowIndex, _char, charIndex, i, len,
-          fontPaths = fabric.fontPaths, objects = this.getObjects();
+          fontPaths = fabric.fontPaths, objects = this._objects;
 
       for (i = 0, len = objects.length; i < len; i++) {
         obj = objects[i];
@@ -1376,7 +1388,7 @@
      * @private
      */
     _setSVGObjects: function(markup, reviver) {
-      var instance, i, len, objects = this.getObjects();
+      var instance, i, len, objects = this._objects;
       for (i = 0, len = objects.length; i < len; i++) {
         instance = objects[i];
         if (instance.excludeFromExport) {
@@ -1397,7 +1409,7 @@
      * @private
      */
     _setSVGBgOverlayImage: function(markup, property, reviver) {
-      if (this[property] && this[property].toSVG) {
+      if (this[property] && !this[property].excludeFromExport && this[property].toSVG) {
         markup.push(this[property].toSVG(reviver));
       }
     },
@@ -1406,33 +1418,32 @@
      * @private
      */
     _setSVGBgOverlayColor: function(markup, property) {
-      var filler = this[property];
+      var filler = this[property], vpt = this.viewportTransform, finalWidth = this.width / vpt[0],
+          finalHeight = this.height / vpt[3];
       if (!filler) {
         return;
       }
       if (filler.toLive) {
         var repeat = filler.repeat;
         markup.push(
-          '<rect transform="translate(', this.width / 2, ',', this.height / 2, ')"',
-          ' x="', filler.offsetX - this.width / 2, '" y="', filler.offsetY - this.height / 2, '" ',
+          '<rect transform="translate(', finalWidth / 2, ',', finalHeight / 2, ')"',
+          ' x="', filler.offsetX - finalWidth / 2, '" y="', filler.offsetY - finalHeight / 2, '" ',
           'width="',
           (repeat === 'repeat-y' || repeat === 'no-repeat'
             ? filler.source.width
-            : this.width),
+            : finalWidth ),
           '" height="',
           (repeat === 'repeat-x' || repeat === 'no-repeat'
             ? filler.source.height
-            : this.height),
+            : finalHeight),
           '" fill="url(#SVGID_' + filler.id + ')"',
           '></rect>\n'
         );
       }
       else {
         markup.push(
-          '<rect x="0" y="0" ',
-          'width="', this.width,
-          '" height="', this.height,
-          '" fill="', this[property], '"',
+          '<rect x="0" y="0" width="100%" height="100%" ',
+          'fill="', this[property], '"',
           '></rect>\n'
         );
       }
@@ -1662,15 +1673,27 @@
      * @chainable
      */
     dispose: function () {
+      // cancel eventually ongoing renders
+      if (this.isRendering) {
+        fabric.util.cancelAnimFrame(this.isRendering);
+        this.isRendering = 0;
+      }
       this.forEachObject(function(object) {
         object.dispose && object.dispose();
       });
       this._objects = [];
+      if (this.backgroundImage && this.backgroundImage.dispose) {
+        this.backgroundImage.dispose();
+      }
       this.backgroundImage = null;
+      if (this.overlayImage && this.overlayImage.dispose) {
+        this.overlayImage.dispose();
+      }
       this.overlayImage = null;
       this._iTextInstances = null;
-      this.lowerCanvasEl = null;
-      this.cacheCanvasEl = null;
+      this.contextContainer = null;
+      fabric.util.cleanUpJsdomNode(this.lowerCanvasEl);
+      this.lowerCanvasEl = undefined;
       return this;
     },
 
@@ -1680,7 +1703,7 @@
      */
     toString: function () {
       return '#<fabric.Canvas (' + this.complexity() + '): ' +
-               '{ objects: ' + this.getObjects().length + ' }>';
+               '{ objects: ' + this._objects.length + ' }>';
     }
   });
 
